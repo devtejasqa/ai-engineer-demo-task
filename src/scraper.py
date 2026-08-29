@@ -9,6 +9,10 @@ PWC_BASE = "https://paperswithcode.co"
 GITHUB_API_BASE = "https://api.github.com/repos"
 
 
+# ---------------------------------------------------------------------------
+# Low-level fetch helpers
+# ---------------------------------------------------------------------------
+
 async def fetch_text(session, url):
     """Fetch raw HTML/text from a URL."""
     try:
@@ -35,6 +39,51 @@ async def fetch_json(session, url):
         print(f"Error fetching {url}: {e}")
         return None, None
 
+
+# ---------------------------------------------------------------------------
+# Discovery: walk the listing pages to collect paper IDs
+# ---------------------------------------------------------------------------
+
+async def discover_paper_ids(session, max_pages=5):
+    """
+    Walk the /papers/recent listing (with pagination) and collect paper IDs.
+    Each page lists ~100 papers; max_pages controls how many pages we crawl.
+    """
+    paper_ids = []
+    url = f"{PWC_BASE}/papers/recent"
+
+    for page_num in range(1, max_pages + 1):
+        html = await fetch_text(session, url)
+        if not html:
+            break
+
+        soup = BeautifulSoup(html, "html.parser")
+        links = soup.select("main ol li a[href^='/paper/']")
+
+        page_ids = []
+        for link in links:
+            href = link.get("href", "")
+            paper_id = href.replace("/paper/", "").strip("/")
+            if paper_id:
+                page_ids.append(paper_id)
+
+        paper_ids.extend(page_ids)
+        print(f"  Page {page_num}: found {len(page_ids)} paper IDs (total so far: {len(paper_ids)})")
+
+        next_link = soup.find("a", {"rel": "next"})
+        if not next_link or not next_link.get("href"):
+            print("  No more pages.")
+            break
+
+        next_href = next_link["href"]
+        url = f"{PWC_BASE}{next_href}" if next_href.startswith("/") else next_href
+
+    return paper_ids
+
+
+# ---------------------------------------------------------------------------
+# Detail extraction: scrape one paper page + enrich with GitHub stars
+# ---------------------------------------------------------------------------
 
 def extract_jsonld(html):
     """Pull the ScholarlyArticle block out of the page's JSON-LD script tag."""
@@ -91,7 +140,6 @@ async def scrape_paper(session, paper_id):
 
     code_repos = article.get("codeRepository", [])
 
-    # Fetch star counts for each linked GitHub repo concurrently.
     star_tasks = [fetch_github_stars(session, repo) for repo in code_repos]
     star_counts = await asyncio.gather(*star_tasks) if code_repos else []
 
@@ -100,7 +148,6 @@ async def scrape_paper(session, paper_id):
         for repo, stars in zip(code_repos, star_counts)
     ]
 
-    # Use the first repo (if any) as the "primary" one for the flat schema field.
     primary_github_url = code_repos[0] if code_repos else None
     primary_stars = star_counts[0] if star_counts else None
 
@@ -121,18 +168,50 @@ async def scrape_paper(session, paper_id):
     }
 
 
+# ---------------------------------------------------------------------------
+# Bulk scrape: discover IDs, then scrape each one (with basic concurrency)
+# ---------------------------------------------------------------------------
+
+async def scrape_papers_bulk(session, paper_ids, concurrency=5):
+    """Scrape many papers with a concurrency limit so we don't hammer the site."""
+    semaphore = asyncio.Semaphore(concurrency)
+    results = []
+
+    async def bounded_scrape(pid):
+        async with semaphore:
+            return await scrape_paper(session, pid)
+
+    tasks = [bounded_scrape(pid) for pid in paper_ids]
+    for i, coro in enumerate(asyncio.as_completed(tasks), start=1):
+        result = await coro
+        if result:
+            results.append(result)
+        if i % 10 == 0:
+            print(f"  Scraped {i}/{len(paper_ids)} papers...")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 async def main():
-    # paper_id is the numeric slug from the paperswithcode.co URL,
-    # e.g. paperswithcode.co/paper/98456 -> "98456"
-    test_ids = ["98456"]
-
     async with aiohttp.ClientSession() as session:
-        results = []
-        for pid in test_ids:
-            result = await scrape_paper(session, pid)
-            if result:
-                results.append(result)
+        print("Discovering paper IDs...")
+        paper_ids = await discover_paper_ids(session, max_pages=2)
+        print(f"\nTotal papers discovered: {len(paper_ids)}\n")
 
+        # Adjust this slice to scrape more once you're ready to scale up.
+        sample_ids = paper_ids[:3]
+        print(f"Scraping {len(sample_ids)} sample papers...\n")
+
+        results = await scrape_papers_bulk(session, sample_ids, concurrency=3)
+
+        with open("data/papers_sample.json", "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+
+        print(f"\nSaved {len(results)} papers to data/papers_sample.json")
         print(json.dumps(results, indent=2))
 
 
