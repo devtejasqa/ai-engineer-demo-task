@@ -19,13 +19,14 @@ def save_json(data, filename):
     print(f"Saved {len(data) if isinstance(data, list) else 1} record(s) to {path}")
 
 
-async def run_research_papers_pipeline(session, max_pages=2, sample_size=5):
+async def run_research_papers_pipeline(session, max_pages=3, sample_size=200):
     """Phase I: discover + scrape research papers."""
     print("\n=== PHASE I: Research Papers ===")
     paper_ids = await discover_paper_ids(session, max_pages=max_pages)
     print(f"Discovered {len(paper_ids)} paper IDs")
 
     sample_ids = paper_ids[:sample_size]
+    print(f"Scraping {len(sample_ids)} papers (this may take a few minutes)...")
     papers = await scrape_papers_bulk(session, sample_ids, concurrency=3)
     save_json(papers, "papers.json")
     return papers
@@ -68,7 +69,7 @@ async def main():
     print(f"Pipeline run started: {datetime.now(timezone.utc).isoformat()}")
 
     async with aiohttp.ClientSession() as session:
-        papers = await run_research_papers_pipeline(session, max_pages=2, sample_size=5)
+        papers = await run_research_papers_pipeline(session, max_pages=3, sample_size=200)
 
     entity_log = run_entity_resolution_pipeline(papers)
 
