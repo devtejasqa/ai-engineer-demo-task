@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+!.env.template
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Output
+*.log
+*.csv
+*.xlsx
+archive/
+
+# Data and generated artifacts
+data/
+output/
+
+# Build / coverage
+.pytest_cache/
+.coverage
+htmlcov/
